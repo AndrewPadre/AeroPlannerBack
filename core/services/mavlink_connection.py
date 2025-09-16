@@ -600,9 +600,10 @@ class MavlinkConnection:
             if msg.get_type() == "BAD_DATA":
                 print("Mavlink BAD DATA")
                 continue
-            self._telemetry_cache.update_from_msg(msg)
+            # self._telemetry_cache.update_from_msg(msg)
         # self._lock.release()
-        return self._telemetry_cache.snapshot()
+        # return self._telemetry_cache.snapshot()
+        return msg
 
 
     def do_mavlink_cmd(self):
