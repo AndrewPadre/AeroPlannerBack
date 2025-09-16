@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends
 from app.deps import get_mav
 from app.schemas.telemetry import Telemetry
 from core.services.mavlink_connection import MavlinkConnection
-from core.dto.telemetry_dto import TelemetryDTO
 
 router = APIRouter()
 

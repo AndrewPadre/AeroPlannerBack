@@ -2,13 +2,12 @@
 # Thread-safe telemetry polling with cached TelemetryDTO and zero-copy snapshot view.
 
 import time
-from __future__ import annotations
 from typing import Any, Dict, Optional
 import threading, time
 from types import MappingProxyType  # read-only dict view
 
 from core.services.mavlink_connection import MavlinkConnection
-from core.dto import TelemetryDTO
+from core.dto.telemetry_dto import TelemetryDTO
 
 
 

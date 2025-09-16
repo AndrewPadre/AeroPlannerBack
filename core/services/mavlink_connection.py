@@ -2,6 +2,9 @@ import sys
 import time
 import math
 import functools
+import threading, time, enum
+from collections import deque
+import random
 
 
 from pymavlink import mavutil
@@ -9,7 +12,6 @@ from pymavlink import mavutil
 from core.services.telemetry_cache import TelemetryCache
 from core.services.mission_utils import dict_to_mission_item_int_fields, mission_item_msg_to_dict, save_mission_json, load_mission_json
 
-import threading
 
 # TODO 
 # Go asynchronous
@@ -20,21 +22,36 @@ import threading
 # Make check function call 1 time
 
 
-def requires_connection(func):  # decorator for check that uav is connected
+class ConnState(str, enum.Enum):
+    DISCONNECTED = "DISCONNECTED"
+    CONNECTING   = "CONNECTING"
+    CONNECTED    = "CONNECTED"
+    RECONNECTING = "RECONNECTING"
+
+
+
+def requires_connection(func):
+    """Decorator: ensures UAV is connected before running the function."""
     @functools.wraps(func)
     def wrapper(self, *args, **kwargs):
-        if getattr(self, 'connect_status_flag', False):
-            return func(self, *args, **kwargs)
-        else:
-            print(f"Cannot execute '{func.__name__}': UAV not connected.")
+        try:
+            if self.is_connected():
+                return func(self, *args, **kwargs)
+            else:
+                print(f"Cannot execute '{func.__name__}': UAV not connected.")
+                return None
+        except AttributeError:
+            print(f"Cannot execute '{func.__name__}': 'is_connected()' not defined.")
             return None
     return wrapper
 
-from collections import deque
 
 class MavlinkConnection:
-    TIMEOUT = 3
-    def __init__(self, port, baudrate=None):
+    TIMEOUT = 3  # Standart timeout for mavlink functions
+    LOST_SEC = 5  # Delay from last heartbeat to switch state to RECONNECTING
+    CONNECT_TIMEOUT = 30  # How long it will take to 
+
+    def __init__(self, port, baudrate=None, auto_reconnect=True):
         self.port = port
         self.baudrate = baudrate
         self.master = None
@@ -42,20 +59,29 @@ class MavlinkConnection:
         self.is_armed = False  # Ask
         # TODO self.curr_mode ask
         self._telemetry_cache = TelemetryCache()
-        self._lock = threading.Lock()
         self._attitude_rate = 4  # default rate in hz
         self._global_int_pos_rate = 4  # default
         self._att_last_t = None          # last arrival timestamp (monotonic)
-        self._att_ema_hz = 0          # EWMA of instantaneous frequency
-        self._att_win = deque(maxlen=64) # rolling window of timestamps
-        self._att_last_report = 0.0      # last time we updated window stats
-        self._att_report_interval = 1.0  # seconds between window recompute
-        self._att_window_hz = 0.0        # last computed window frequency
-        self._att_alpha = 0.2            # EWMA smoothing factor (0..1)
-        self._att_debug = True  
-        self.inc = 0
+        
+        # New
+        self._state_lock = threading.Lock()
+        self.auto_reconnect = auto_reconnect
+        self._connected_evt = threading.Event()  # TODO delete
+        self._last_hb_ts: float = 0.0
+        self._state = ConnState.DISCONNECTED
+        self._stop = threading.Event()
+        self._reader_thread: threading.Thread | None = None
+        
 
+    def state(self) -> ConnState:
+        with self._state_lock: 
+            return self._state
+        
 
+    def is_connected(self) -> bool:
+        return self.state() == ConnState.CONNECTED
+
+    # deprecated
     def connect_to_uav(self):
         """
         Function for connecting UAV to ground station
@@ -70,22 +96,138 @@ class MavlinkConnection:
                 print(type(self.master))
 
                 print("Waiting for heartbeat...")
-                self.master.wait_heartbeat()
+                res = self.master.wait_heartbeat(timeout=10)
                 print("Heartbeat received from system (system %u component %u)" %
                       (self.master.target_system, self.master.target_component))
 
-                self.connect_status_flag = True
-                return True
+                self.connect_status_flag = res
+                return res
 
             except Exception as e:
                 print(f"Failed to connect: {e}")
                 return False
+            
+    def connect_async(self, timeout: float = 8.0) -> None:
+        """Connecting to mav for timeout"""
+        with self._state_lock:
+            if self._state in (ConnState.CONNECTING, ConnState.CONNECTED, ConnState.RECONNECTING):
+                return
+            self._state = ConnState.CONNECTING
+            self._last_err = None
+            self._connected_evt.clear()
+        # self._connect_thread = threading.Thread(target=self._connect_worker, args=([timeout]), daemon=True)
+        # self._connect_thread.start()
+        print("Connecting")
+        ok = self._try_connect_once(timeout)
+        if ok:
+            self._start_reader_and_watchdog()
+    
+    # TODO remove
+    def wait_connected(self, timeout: float) -> bool:
+        """Wait for the connect"""
+        return self._connected_evt.wait(timeout=timeout)
+
+        
+    
+    def disconnect(self) -> bool:
+        """Disconnect from the mav, close all service threads"""
+        self._stop.set()
+        try:
+            if self._reader_thread and self._reader_thread.is_alive():
+                self._reader_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        try:
+            if self.master is not None:
+                try:
+                    self.master.close()
+                except Exception:
+                    pass
+            self.master = None
+        finally:
+            with self._state_lock:
+                self._state = ConnState.DISCONNECTED
+            self._connected_evt.clear()
+            self._stop.clear()
+        return True
+
+                    
+    def _try_connect_once(self, timeout: float) -> bool:
+        """
+        Try to establish a single connection attempt and wait for heartbeat.
+        Returns True only if heartbeat is received within the given timeout.
+        """
+
+        try:
+            # Create MAVLink connection (serial with baudrate or UDP/TCP)
+            if self.baudrate is not None:
+                self.master = mavutil.mavlink_connection(self.port, baud=self.baudrate)
+            else:
+                self.master = mavutil.mavlink_connection(self.port)
+
+            # Wait for heartbeat (blocks until timeout)
+            print("Waiting for heartbeat")
+            hb = self.master.wait_heartbeat(timeout=timeout)
+
+            if hb is None:
+                print("No heartbeat")
+                # No heartbeat received -> treat as failed connection
+                self._last_err = f"No heartbeat received within {timeout} seconds"
+                self._connected_evt.clear()
+                with self._state_lock:
+                    self._state = ConnState.DISCONNECTED
+                return False
+            print("Heartbeat received")
+
+            # Heartbeat received -> connection is considered established
+            self._last_hb_ts = time.time()
+            with self._state_lock:
+                self._state = ConnState.CONNECTED
+            self._connected_evt.set()
+            return True
+
+        except Exception as e:
+            # Any error during connection attempt -> failed
+            self._last_err = str(e)
+            self._connected_evt.clear()
+            with self._state_lock:
+                self._state = ConnState.DISCONNECTED
+            return False
+
+        
+    
+    def _start_reader_and_watchdog(self):
+        def reader():
+            while not self._stop.is_set():
+                try:
+                    msg = self.master.recv_match(blocking=True, timeout=1)
+                    if msg and msg.get_type() == "HEARTBEAT":
+                        self._last_hb_ts = time.time()
+                except Exception:
+                    time.sleep(0.2)
+        def watchdog():
+            while not self._stop.is_set():
+                if self.is_connected() and (time.time() - self._last_hb_ts > self.LOST_SEC):
+                    print("Reconnecting")
+                    with self._state_lock:
+                        self._state = ConnState.RECONNECTING
+                    # self.disconnect()
+                    # self.connect_async(timeout=5.0, auto_reconnect=True)
+                elif not self.is_connected() and (time.time() - self._last_hb_ts < self.LOST_SEC):
+                    with self._state_lock:
+                        self._state = ConnState.CONNECTED
+                    self._connected_evt.set()
+                time.sleep(0.5)
+        self._reader_thread = threading.Thread(target=reader, daemon=True)
+        self._reader_thread.start()
+        threading.Thread(target=watchdog, daemon=True).start()
                 
     
+    # deprecated
     def disconnect_from_uav(self):
         """
         Function for disconnecting UAV from ground station
-        :return: bool status that UAV is disconnected from GS
+            :return: bool status that UAV is disconnected from GS
         """
         try:
             if self.master is not None:
@@ -432,6 +574,7 @@ class MavlinkConnection:
             if dt > 0:
                 inst_hz = 1.0 / dt
                 # First sample initializes EMA
+
                 self._att_ema_hz = inst_hz if self._att_ema_hz is None else \
                                    (0.2 * inst_hz + 0.8 * self._att_ema_hz)
         self._att_last_t = now

@@ -1,7 +1,6 @@
 # Single telemetry DTO used across the app (HUD, map, panels).
 # Comments in English.
 
-from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
@@ -36,7 +35,7 @@ class TelemetryDTO:
     mode: str = None
 
     @classmethod
-    def from_snapshot(cls, s: Dict[str, Any]) -> TelemetryDTO:
+    def from_snapshot(cls, s: Dict[str, Any]) -> "TelemetryDTO":
         """Build DTO from TelemetryService.snapshot() (flat dict)."""
         # Prefer baro alt, fallback to GPS
         alt_pref = s.get("alt_baro", None)
