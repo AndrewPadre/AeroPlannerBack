@@ -6,4 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.116.1",
+    "pydantic-settings>=2.10.1",
+    "pymavlink>=2.4.49",
 ]
