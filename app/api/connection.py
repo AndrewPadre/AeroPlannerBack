@@ -19,7 +19,6 @@ def connect_async(mav: MavlinkConnection=Depends(get_mav)) -> dict:
     return {"connected": bool(mav.is_connected())}
 
 
-
 @router.get("/status")
 def status(mav: MavlinkConnection=Depends(get_mav)) -> dict:
     return {"connected": mav.connect_status_flag}  # TODO replace by heartbeat
