@@ -1,3 +1,5 @@
+import threading
+
 from app.settings import settings
 from core.services.joystick import Joystick
 from core.services.gimbal_view_pro import GimbalViewPro
@@ -6,7 +8,7 @@ from core.services.mavlink_connection import MavlinkConnection
 _mav = MavlinkConnection(settings.MAVLINK_URL)
 
 _joystick = Joystick()
-_joystick.start()
+_joystick.start_joystick_thread()
 
 _gimbal_view_pro = GimbalViewPro()
 _gimbal_view_pro.start()
