@@ -5,12 +5,14 @@ import functools
 import threading, time, enum
 from collections import deque
 import random
-
+from typing import Any
+from queue import Queue
 
 from pymavlink import mavutil
 
 from core.services.telemetry_cache import TelemetryCache
 from core.services.mission_utils import dict_to_mission_item_int_fields, mission_item_msg_to_dict, save_mission_json, load_mission_json
+from core.services.telemetry_store import TelemetryStore
 
 
 # TODO 
@@ -54,14 +56,18 @@ class MavlinkConnection:
     def __init__(self, port, baudrate=None, auto_reconnect=True):
         self.port = port
         self.baudrate = baudrate
-        self.master = None
+        self.master: Any = None
         self.connect_status_flag = False
         self.is_armed = False  # Ask
-        # TODO self.curr_mode ask
+        self.curr_mode: str = "Manual"
         self._telemetry_cache = TelemetryCache()
+        self._store = TelemetryStore()
+        self.check_if_armed
         self._attitude_rate = 4  # default rate in hz
         self._global_int_pos_rate = 4  # default
         self._att_last_t = None          # last arrival timestamp (monotonic)
+        self._last_command_ack: Any = None # Last ACK message(confirmartion)
+        self._command_ack_lock = threading.Lock()
         
         # New
         self._state_lock = threading.Lock()
@@ -200,9 +206,7 @@ class MavlinkConnection:
         def reader():
             while not self._stop.is_set():
                 try:
-                    msg = self.master.recv_match(blocking=True, timeout=1)
-                    if msg and msg.get_type() == "HEARTBEAT":
-                        self._last_hb_ts = time.time()
+                    self.telemetry_store()  # Update telemetry store, read data from the UAV
                 except Exception:
                     time.sleep(0.2)
         def watchdog():
@@ -221,7 +225,21 @@ class MavlinkConnection:
         self._reader_thread = threading.Thread(target=reader, daemon=True)
         self._reader_thread.start()
         threading.Thread(target=watchdog, daemon=True).start()
-                
+        
+    def get_all_telemetry(self) -> dict:
+        """Provides all last telemetry messages"""
+        snap = self._store.snapshot()
+        return snap
+    
+    def get_all_types(self) -> list:
+        return self._store.get_types()
+    
+    def get_message(self, msg_id) -> dict:
+        return self._store.get_last(msg_id)
+    
+    def get_message_history(self, msg_id) -> list:
+        return self._store.get_history(msg_id, 50)
+    
     
     # deprecated
     def disconnect_from_uav(self):
@@ -261,7 +279,7 @@ class MavlinkConnection:
 
         deadline = time.time() + self.TIMEOUT
         while time.time() < deadline:
-            ack = self.master.recv_match(type="COMMAND_ACK", blocking=True, timeout=0.2)
+            ack = self._last_command_ack
             if not ack:
                 continue
             if getattr(ack, "command", None) == mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL:
@@ -289,6 +307,7 @@ class MavlinkConnection:
         return self._set_rate(rate_hz, msg_id)
 
 
+    # Deprecated
     @requires_connection
     def check_if_armed(self) -> bool:
         hb = self.master.recv_match(type='HEARTBEAT', blocking=True, timeout=2)
@@ -306,16 +325,14 @@ class MavlinkConnection:
                     1, 0, 0, 0, 0, 0, 0)
         start_time = time.time()
         # Waiting for the arm
-        while not self.check_if_armed() and time.time() - start_time < self.TIMEOUT:
+        while not self.is_armed and time.time() - start_time < self.TIMEOUT:
             time.sleep(0.5)
 
         # Setting is_armed field
-        if self.check_if_armed():
-            self.is_armed = True
+        if self.is_armed:
             print("Armed")
             return True
         else:
-            self.is_armed = False
             print("Cannot arm")
             return False
         
@@ -334,32 +351,21 @@ class MavlinkConnection:
         while self.check_if_armed() and time.time() - start_time < self.TIMEOUT:
             time.sleep(0.5)
         # Setting is_armed field
-        if self.check_if_armed():
-            self.is_armed = False
+        if self.is_armed:
             print("Disarmed")
             return True
         else:
-            self.is_armed = True
             print("Cannot disarm")
             return False
         
 
     @requires_connection
-    def get_flight_mode(self):
-        # Try to get a fresh HEARTBEAT within timeout
-        hb = self.master.recv_match(type='HEARTBEAT', blocking=True, timeout=self.TIMEOUT)
-        if hb:
-            return mavutil.mode_string_v10(hb)
-        # Fallback to last known mode tracked by mavutil (may be stale)
-        return getattr(self.master, 'flightmode', None)
-
-    @requires_connection
-    def change_flight_mode(self, flight_mode):
+    def change_flight_mode(self, flight_mode) -> bool:
         # Validate flight mode
         if flight_mode not in self.master.mode_mapping():
             print('Unknown mode : {}'.format(flight_mode))
             print('Try:', list(self.master.mode_mapping().keys()))
-            sys.exit()  # TODO replace by exception
+            return False
         # Get flight mode id
         mode_id = self.master.mode_mapping()[flight_mode]
 
@@ -371,13 +377,15 @@ class MavlinkConnection:
 
         
         start_time = time.time()
-        while self.get_flight_mode() != flight_mode and time.time() - start_time < self.TIMEOUT:
-            time.sleep(0.5)
-        
-        if self.get_flight_mode() == flight_mode:
+        while self.curr_mode != flight_mode and time.time() - start_time < 5:
+            print(self.curr_mode)
+            time.sleep(0.)
+        if self.curr_mode == flight_mode:
             print(f"Set flight mode to {flight_mode}")
+            return True
         else:
             print(f"Can't change flight mode to {flight_mode}")
+            return False
 
 
     @requires_connection
@@ -504,60 +512,65 @@ class MavlinkConnection:
 
     @requires_connection
     def change_airspeed(self, airspeed: float) -> bool:
-        self.master.mav.command_long_send(
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED,
-            0,
-            0,                # speed type: 0 = airspeed
-            float(airspeed),  # target airspeed (m/s)
-            -1,               # throttle: ignore
-            0, 0, 0, 0
-        )
+        with self._command_ack_lock:
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED,
+                0,
+                0,                # speed type: 0 = airspeed
+                float(airspeed),  # target airspeed (m/s)
+                -1,               # throttle: ignore
+                0, 0, 0, 0
+            )
 
-        # TODO consider deleting while loop
-        # Wait for the response
-        start_time = time.time()
-        while time.time() - start_time < self.TIMEOUT:
-            ack = self.master.recv_match(type="COMMAND_ACK", blocking=True, timeout=0.2)
-            if not ack:
-                continue
-            if getattr(ack, "command", None) == mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED:
-                ok = ack.result in (mavutil.mavlink.MAV_RESULT_ACCEPTED, 0)
-                print(f"Change airspeed ACK: {ack.result} ({'OK' if ok else 'FAIL'})")
-                return ok
+            # TODO consider deleting while loop
+            # Wait for the response
+            start_time = time.time()
+            while time.time() - start_time < self.TIMEOUT:
+                ack = self._last_command_ack
+                if not ack:
+                    continue
+                if getattr(ack, "command", None) == mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED:
+                    ok = ack.result in (mavutil.mavlink.MAV_RESULT_ACCEPTED, 0)
+                    print(f"Change airspeed ACK: {ack.result} ({'OK' if ok else 'FAIL'})")
+                    return ok
 
-        print("Change airspeed: no COMMAND_ACK received")
-        return False
+            print("Change airspeed: no COMMAND_ACK received")
+            return False
 
 
     @requires_connection
     def change_altitude(self, altitude: float) -> bool:
-        frame = mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
-        self.master.mav.command_long_send(
-            self.master.target_system,
-            self.master.target_component,
-            mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE,
-            0,
-            float(altitude),  # param1: Altitude (m)
-            int(frame),       # param2: Frame (MAV_FRAME)
-            0, 0, 0, 0, 0     # param3..param7 unused
-        )
+        with self._command_ack_lock:
+            frame = mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT
+            self.master.mav.command_long_send(
+                self.master.target_system,
+                self.master.target_component,
+                mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE,
+                0,
+                float(altitude),  # param1: Altitude (m)
+                int(frame),       # param2: Frame (MAV_FRAME)
+                0, 0, 0, 0, 0     # param3..param7 unused
+            )
 
-        # TODO consider deleting while loop
-        # Wait for COMMAND_ACK
-        start_time = time.time()
-        while time.time() - start_time < self.TIMEOUT:
-            ack = self.master.recv_match(type="COMMAND_ACK", blocking=True, timeout=0.2)
-            if not ack:
-                continue
-            if getattr(ack, "command", None) == mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE:
-                ok = ack.result in (mavutil.mavlink.MAV_RESULT_ACCEPTED, 0)
-                print(f"Change altitude ACK: {ack.result} ({'OK' if ok else 'FAIL'})")
-                return ok
+            # TODO consider deleting while loop
+            # time.sleep(0.02)
+            # Wait for COMMAND_ACK
+            start_time = time.time()
+            while time.time() - start_time < self.TIMEOUT:
+                ack = self._last_command_ack
+                print(ack)
+                if not ack:
+                    continue
+                if getattr(ack, "command", None) == mavutil.mavlink.MAV_CMD_DO_CHANGE_ALTITUDE:
+                    ok = ack.result in (mavutil.mavlink.MAV_RESULT_ACCEPTED, 0)
+                    print(f"Change altitude ACK: {ack.result} ({'OK' if ok else 'FAIL'})")
+                    self._last_command_ack = None
+                    return ok
 
-        print("Change altitude: no COMMAND_ACK received")
-        return False
+            print("Change altitude: no COMMAND_ACK received")
+            return False
 
 
 
@@ -581,16 +594,16 @@ class MavlinkConnection:
         return self._att_ema_hz
 
     @requires_connection
-    def read_data_from_uav(self, poll_window: float = 0.01) -> dict[str, tuple[str, object]]:
+    def read_data_from_uav(self, poll_window: float = 0.05) -> dict[str, tuple[str, object]]:
         # print(threading.current_thread())
         # self._lock.acquire()
         end = time.time() + poll_window
         # read for 0.05s or until get data
         while time.time() < end:
-            msg = self.master.recv_match(blocking=False)
+            msg = self.master.recv_match(blocking=True)
             if not msg:
                 # tiny sleep to avoid busy loop
-                time.sleep(0.005)
+                # time.sleep(0.005)
                 continue
             # if msg.get_type() == "ATTITUDE":
             #     if self._att_ema_hz < 18:
@@ -600,10 +613,34 @@ class MavlinkConnection:
             if msg.get_type() == "BAD_DATA":
                 print("Mavlink BAD DATA")
                 continue
-            # self._telemetry_cache.update_from_msg(msg)
+            print("msg", msg)
+            self._telemetry_cache.update_from_msg(msg)
         # self._lock.release()
-        # return self._telemetry_cache.snapshot()
-        return msg
+        return self._telemetry_cache.snapshot()
+
+    @requires_connection
+    def telemetry_store(self) -> dict[str, dict[str, object]]:
+        end = time.time() + 1
+        while time.time() < end:
+            msg = self.master.recv_match(blocking=True, timeout=1)
+            if not msg:
+                print("continue")
+                # time.sleep(0.005)
+                continue
+            t:str = msg.get_type()
+            if t == "HEARTBEAT":
+                self._last_hb_ts = time.time()
+                self.curr_mode = mavutil.mode_string_v10(msg)
+                self.is_armed = (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
+            elif t == "COMMAND_ACK":
+                self._last_command_ack = msg
+            elif t.startswith("UNKNOWN"):
+                continue
+            
+            d = msg.to_dict()
+            self._store.ingest(t, d)
+
+        return self._store.snapshot() 
 
 
     def do_mavlink_cmd(self):
