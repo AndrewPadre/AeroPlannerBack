@@ -609,6 +609,19 @@ class MavlinkConnection:
     def do_mavlink_cmd(self):
         pass
 
+    @requires_connection
+    def send_rc(self, channel_id, pwm=1500):
+        if channel_id < 1 or channel_id > 16:
+            return
+        rc_channel_values = [65535 for _ in range(16)]
+        rc_channel_values[channel_id - 1] = pwm
+        self.master.mav.rc_channels_override_send(
+            self.master.target_system,
+            self.master.target_component,
+            *rc_channel_values)
+
+        print(f"Channel {channel_id + 1}: {pwm} PWM")
+
 
 if __name__ == '__main__':
     mavlink = MavlinkConnection('COM5', 115200)
