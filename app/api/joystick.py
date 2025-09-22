@@ -19,6 +19,18 @@ def stop_joystick(joystick: Joystick = Depends(get_joystick)):
     return {"joystick_run": joystick.running}
 
 
+@router.post("/joystick-start-rc")
+def stop_joystick(joystick: Joystick = Depends(get_joystick)):
+    joystick.start_rc()
+    return {"joystick_rc_status": joystick.start_rc_flag}
+
+
+@router.post("/joystick-stop-rc")
+def stop_joystick(joystick: Joystick = Depends(get_joystick)):
+    joystick.stop_rc()
+    return {"joystick_rc_status": joystick.start_rc_flag}
+
+
 @router.get("/joystick")
 def joystick(joystick: Joystick = Depends(get_joystick)):
     data = joystick.rc_mapping_dict

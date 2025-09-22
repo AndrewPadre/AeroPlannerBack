@@ -1,4 +1,4 @@
-import sys
+
 import time
 import pygame
 import threading
@@ -6,6 +6,9 @@ import threading
 
 class Joystick:
     def __init__(self):
+
+        self.start_rc_flag = False
+
         pygame.init()
         pygame.joystick.init()
         self.joystick = None
@@ -24,6 +27,7 @@ class Joystick:
         }
         self.running = False
         self.joystick_name = None
+        self._stop = threading.Event()
 
     def do_default_rc_mapping_dict(self):
         for key in self.rc_mapping_dict:
@@ -51,19 +55,17 @@ class Joystick:
     def is_joystick_connected(self) -> bool:
         return pygame.joystick.get_count() > 0
 
-
-    def get_pwm_joystick(self, j_value):
+    def get_pwm_joystick(self, j_value) -> int:
         return int(((j_value + 1) / 2) * (2000 - 1000) + 1000)
-
 
     def get_rc_mapping_value(self, rc_values):
         for i, value in enumerate(rc_values, start=1):
             self.rc_mapping_dict["RC"][i]["default_value"] = value
             self.rc_mapping_dict["RC"][i]["pwm_value"] = self.get_pwm_joystick(value)
 
-    def start_joystick_thread(self):
-        thread  = threading.Thread(target=self.run)
-        thread.start()
+    def start_joystick_thread(self, mav):
+        thread_joystick = threading.Thread(target=self.run, daemon=True, args=(mav,))
+        thread_joystick.start()
 
     def start_joystick(self):
         self.running = True
@@ -72,8 +74,8 @@ class Joystick:
         self.running = False
         self.do_default_rc_mapping_dict()
 
-    def run(self):
-        while True:
+    def run(self, mav):
+        while not self._stop.is_set():
             if not self.joystick_connection_status():
                 time.sleep(1)
                 continue
@@ -86,6 +88,14 @@ class Joystick:
                         try:
                             rc_values = [self.joystick.get_axis(i) for i in range(8)]
                             self.get_rc_mapping_value(rc_values)
+
+                            # send rc to uav
+                            if self.start_rc_flag:
+                                print("send rc_values")
+                            else:
+                                for i in range(0, 8):
+                                    mav.send_rc(channel_id=i, pwm=self.rc_mapping_dict["RC"][i]["pwm_value"])
+
                         except IndexError:
                             print("Joystick does not have 8 axes", end='\r')
 
@@ -102,7 +112,14 @@ class Joystick:
                 self.joystick = None
                 print("Rechecking for joystick...")
 
+    def start_rc(self):
+        self.start_rc_flag = True
+
+    def stop_rc(self):
+        self.start_rc_flag = False
+
+
 if __name__ == "__main__":
     joystick = Joystick()
-    joystick.run()
+    joystick.start_joystick_thread()
 

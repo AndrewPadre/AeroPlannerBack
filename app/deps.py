@@ -7,9 +7,12 @@ from core.services.mavlink_connection import MavlinkConnection
 
 _mav = MavlinkConnection(settings.MAVLINK_URL)
 
+"""-----JOYSTICK-----"""
 _joystick = Joystick()
-_joystick.start_joystick_thread()
+_joystick.start_joystick_thread(_mav)
 
+
+"""-----GIMBAL VIEW PRO-----"""
 _gimbal_view_pro = GimbalViewPro()
 _gimbal_view_pro.start()
 
