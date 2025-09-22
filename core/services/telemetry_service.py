@@ -3,7 +3,7 @@
 
 import time
 from typing import Any, Dict, Optional
-import threading, time
+import threading
 from types import MappingProxyType  # read-only dict view
 
 from core.services.mavlink_connection import MavlinkConnection
