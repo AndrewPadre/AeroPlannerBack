@@ -87,33 +87,8 @@ class MavlinkConnection:
     def is_connected(self) -> bool:
         return self.state() == ConnState.CONNECTED
 
-    # deprecated
-    def connect_to_uav(self):
-        """
-        Function for connecting UAV to ground station
-        :return: bool status that UAV is connected to GS
-        """
-        while not self.connect_status_flag:
-            try:
-                if self.baudrate is not None:
-                    self.master = mavutil.mavlink_connection(self.port, baud=self.baudrate)
-                else:
-                    self.master = mavutil.mavlink_connection(self.port)
-                print(type(self.master))
-
-                print("Waiting for heartbeat...")
-                res = self.master.wait_heartbeat(timeout=10)
-                print("Heartbeat received from system (system %u component %u)" %
-                      (self.master.target_system, self.master.target_component))
-
-                self.connect_status_flag = res
-                return res
-
-            except Exception as e:
-                print(f"Failed to connect: {e}")
-                return False
             
-    def connect_async(self, timeout: float = 8.0) -> None:
+    def connect_to_uav(self, timeout: float = 8.0) -> None:
         """Connecting to mav for timeout"""
         with self._state_lock:
             if self._state in (ConnState.CONNECTING, ConnState.CONNECTED, ConnState.RECONNECTING):
@@ -135,7 +110,7 @@ class MavlinkConnection:
 
         
     
-    def disconnect(self) -> bool:
+    def disconnect_from_uav(self) -> bool:
         """Disconnect from the mav, close all service threads"""
         self._stop.set()
         try:
@@ -240,28 +215,6 @@ class MavlinkConnection:
     def get_message_history(self, msg_id) -> list:
         return self._store.get_history(msg_id, 50)
     
-    
-    # deprecated
-    def disconnect_from_uav(self):
-        """
-        Function for disconnecting UAV from ground station
-            :return: bool status that UAV is disconnected from GS
-        """
-        try:
-            if self.master is not None:
-                # Close MAVLink connection if open
-                self.master.close()
-                print("MAVLink connection closed.")
-
-            # Reset internal state
-            self.master = None
-            self.connect_status_flag = False
-            return True
-
-        except Exception as e:
-            print(f"Failed to disconnect: {e}")
-            return False
-        
 
     @requires_connection
     def _set_rate(self, rate_hz: float, msg_id: int):
