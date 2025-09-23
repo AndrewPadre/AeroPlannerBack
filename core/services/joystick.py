@@ -4,11 +4,9 @@ import pygame
 import threading
 
 
-class Joystick:
+class RemoteController:
     def __init__(self):
-
         self.start_rc_flag = False
-
         pygame.init()
         pygame.joystick.init()
         self.joystick = None
@@ -29,97 +27,60 @@ class Joystick:
         self.joystick_name = None
         self._stop = threading.Event()
 
-    def do_default_rc_mapping_dict(self):
-        for key in self.rc_mapping_dict:
+    def do_default_rc_mapping_dict(self) -> dict:
+        for _ in self.rc_mapping_dict:
             for channel in self.rc_mapping_dict.get("RC", {}):
                 channel_data = self.rc_mapping_dict["RC"][channel]
                 channel_data["default_value"] = None
                 channel_data["pwm_value"] = None
+                
+        return self.rc_mapping_dict
 
-    def joystick_connection_status(self) -> bool:
+    def connect(self) -> bool:
         pygame.joystick.quit()
         pygame.joystick.init()
         joystick_count = pygame.joystick.get_count()
-        #print(f"[DEBUG] Joystick count: {joystick_count}")
+        print(f"[DEBUG] Joystick count: {joystick_count}")
         if joystick_count == 0:
-            #print('No joystick connected')
+            print('No joystick connected')
             self.joystick_name = None
             return False
         else:
             self.joystick = pygame.joystick.Joystick(0)
             self.joystick.init()
             self.joystick_name = self.joystick.get_name()
-            #print("Joystick connected:", self.joystick_name)
+            print("Joystick connected:", self.joystick_name)
             return True
+        
+    def disconnect(self):
+        pygame.joystick.quit()
 
     def is_joystick_connected(self) -> bool:
         return pygame.joystick.get_count() > 0
 
-    def get_pwm_joystick(self, j_value) -> int:
+    def float_to_pwm(self, j_value) -> int:
         return int(((j_value + 1) / 2) * (2000 - 1000) + 1000)
 
     def get_rc_mapping_value(self, rc_values):
         for i, value in enumerate(rc_values, start=1):
             self.rc_mapping_dict["RC"][i]["default_value"] = value
-            self.rc_mapping_dict["RC"][i]["pwm_value"] = self.get_pwm_joystick(value)
+            self.rc_mapping_dict["RC"][i]["pwm_value"] = self.float_to_pwm(value)
+        return self.rc_mapping_dict
 
-    def start_joystick_thread(self, mav):
-        thread_joystick = threading.Thread(target=self.run, daemon=True, args=(mav,))
-        thread_joystick.start()
+    def get_snapshot(self) -> dict:
+        if not self.is_joystick_connected():
+            return self.do_default_rc_mapping_dict()
+        pygame.event.pump()
+        rc_values = [self.joystick.get_axis(i) for i in range(8)]
+        mapped_rc_values = self.get_rc_mapping_value(rc_values)
+        return mapped_rc_values
 
-    def start_joystick(self):
-        self.running = True
-
-    def stop_joystick(self):
-        self.running = False
-        self.do_default_rc_mapping_dict()
-
-    def run(self, mav):
-        while not self._stop.is_set():
-            if not self.joystick_connection_status():
-                time.sleep(1)
-                continue
-
-            try:
-                while self.is_joystick_connected():
-                    pygame.event.pump()
-
-                    if self.running:
-                        try:
-                            rc_values = [self.joystick.get_axis(i) for i in range(8)]
-                            self.get_rc_mapping_value(rc_values)
-
-                            # send rc to uav
-                            if self.start_rc_flag:
-                                print("send rc_values")
-                            else:
-                                for i in range(0, 8):
-                                    mav.send_rc(channel_id=i, pwm=self.rc_mapping_dict["RC"][i]["pwm_value"])
-
-                        except IndexError:
-                            print("Joystick does not have 8 axes", end='\r')
-
-                        pygame.time.wait(20)
-                    else:
-                        time.sleep(0.02)
-
-                print("Joystick disconnected")
-                self.do_default_rc_mapping_dict() # reset dict to default
-                self.joystick = None
-
-            except pygame.error as e:
-                print(f"Joystick error: {e}")
-                self.joystick = None
-                print("Rechecking for joystick...")
-
-    def start_rc(self):
-        self.start_rc_flag = True
-
-    def stop_rc(self):
-        self.start_rc_flag = False
 
 
 if __name__ == "__main__":
-    joystick = Joystick()
-    joystick.start_joystick_thread()
+    joystick = RemoteController()
+    joystick.connect()
+    while True:
+        print(joystick.get_snapshot())
+        time.sleep(0.1)
 

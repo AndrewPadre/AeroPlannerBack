@@ -8,11 +8,14 @@ import random
 from typing import Any
 from queue import Queue
 
+
+import pygame
 from pymavlink import mavutil
 
 from core.services.telemetry_cache import TelemetryCache
 from core.services.mission_utils import dict_to_mission_item_int_fields, mission_item_msg_to_dict, save_mission_json, load_mission_json
 from core.services.telemetry_store import TelemetryStore
+from core.services.joystick import RemoteController
 
 
 # TODO 
@@ -31,6 +34,13 @@ class ConnState(str, enum.Enum):
     RECONNECTING = "RECONNECTING"
 
 
+class RemoteConnState(str, enum.Enum):
+    DISCONNECTED = "DISCONNECTED"
+    CONNECTED    = "CONNECTED"
+    RECONNECTING = "RECONNECTING"
+    # Non need for CONNECTING   
+
+
 
 def requires_connection(func):
     """Decorator: ensures UAV is connected before running the function."""
@@ -41,10 +51,10 @@ def requires_connection(func):
                 return func(self, *args, **kwargs)
             else:
                 print(f"Cannot execute '{func.__name__}': UAV not connected.")
-                return None
+                return {"error": "UAV is not connected"}
         except AttributeError:
             print(f"Cannot execute '{func.__name__}': 'is_connected()' not defined.")
-            return None
+            return {"error": "attribute error"}
     return wrapper
 
 
@@ -52,8 +62,9 @@ class MavlinkConnection:
     TIMEOUT = 3  # Standart timeout for mavlink functions
     LOST_SEC = 5  # Delay from last heartbeat to switch state to RECONNECTING
     CONNECT_TIMEOUT = 30  # How long it will take to 
+    BATT_CELLS = 3
 
-    def __init__(self, port, baudrate=None, auto_reconnect=True):
+    def __init__(self, port, baudrate=None):
         self.port = port
         self.baudrate = baudrate
         self.master: Any = None
@@ -71,12 +82,19 @@ class MavlinkConnection:
         
         # New
         self._state_lock = threading.Lock()
-        self.auto_reconnect = auto_reconnect
         self._connected_evt = threading.Event()  # TODO delete
         self._last_hb_ts: float = 0.0
         self._state = ConnState.DISCONNECTED
         self._stop = threading.Event()
         self._reader_thread: threading.Thread | None = None
+        
+        self.remote_controller = RemoteController()
+        self._remote_run_event = threading.Event()  # event for starting loop that takes rc_values from remote
+        self._remote_send_event = threading.Event()  # event for starging loop that sends rc_values to MAV
+        self._remote_thread: threading.Thread = threading.Thread(target=self._remote_loop, daemon=True)
+        self.remote_rc_values: dict = self.remote_controller.do_default_rc_mapping_dict()
+        self._remote_state = RemoteConnState.DISCONNECTED
+
         
 
     def state(self) -> ConnState:
@@ -131,7 +149,62 @@ class MavlinkConnection:
             self._connected_evt.clear()
             self._stop.clear()
         return True
+    
+    # ________________JOYSTICK___________________
+    def connect_remote(self) -> bool:
+        res = self.remote_controller.connect()
+        print(res)
+        if not res:
+            self._remote_state = RemoteConnState.DISCONNECTED
+            return False
+        self._remote_state = RemoteConnState.CONNECTED
+        self._remote_run_event.set()
+        self._remote_thread.start()
+        return res
+    
+    def disconnect_remote(self):
+        self.remote_controller.disconnect()
+        self._remote_state = RemoteConnState.DISCONNECTED
+        self._remote_run_event.clear()
+        return self._remote_state
+        
+    
+    @requires_connection
+    def start_rc_override(self):
+        self._remote_send_event.set()
+        return self._remote_state
 
+    @requires_connection 
+    def stop_rc_override(self):
+        self._remote_send_event.clear()
+        return self._remote_state
+    
+    def _remote_loop(self):
+        while self._remote_run_event.is_set():
+            # Sleep if joystick is not connected
+            if not self.remote_controller.is_joystick_connected():
+                self._remote_state = RemoteConnState.RECONNECTING  # TODO make timeout on reconnecting
+                time.sleep(0.5)
+            self._remote_state = RemoteConnState.CONNECTED
+            self._remote_rc_values = self.remote_controller.get_snapshot()
+            #  Sending rc to mav
+            print(self._remote_send_event.is_set())
+            if self._remote_send_event.is_set():
+                self._send_rc(self._remote_rc_values)
+            time.sleep(0.1)
+            
+    @requires_connection    
+    def _send_rc(self, rc_values: dict[str, dict[int, dict]]):
+        rc_channel_values = [65535 for _ in range(18)]
+        for key, value in rc_values["RC"].items():
+            rc_channel_values[key - 1] = value.get("pwm_value", 1500)
+
+        self.master.mav.rc_channels_override_send(
+            self.master.target_system,                
+            self.master.target_component,            
+            *rc_channel_values)
+        
+        
                     
     def _try_connect_once(self, timeout: float) -> bool:
         """
@@ -200,20 +273,66 @@ class MavlinkConnection:
         self._reader_thread = threading.Thread(target=reader, daemon=True)
         self._reader_thread.start()
         threading.Thread(target=watchdog, daemon=True).start()
-        
+
+    @requires_connection 
     def get_all_telemetry(self) -> dict:
         """Provides all last telemetry messages"""
         snap = self._store.snapshot()
         return snap
     
+    @requires_connection 
     def get_all_types(self) -> list:
         return self._store.get_types()
     
+    @requires_connection 
     def get_message(self, msg_id) -> dict:
         return self._store.get_last(msg_id)
     
+    @requires_connection 
     def get_message_history(self, msg_id) -> list:
-        return self._store.get_history(msg_id, 50)
+        return self._store.get_history(msg_id, 50)  # TODO remove hardcode
+    
+    @requires_connection
+    def get_frontend_telemetry(self) -> dict:
+        gps = self._store.get_last("GPS_RAW_INT").get("data", {})
+        sys_status = self._store.get_last("SYS_STATUS").get("data", {})
+        battery = self._store.get_last("BATTERY_STATUS").get("data", {})
+        att = self._store.get_last("ATTITUDE").get("data", {})
+        vfr = self._store.get_last("VFR_HUD").get("data", {})
+        home = self._store.get_last("HOME_POSITION").get("data", {})
+        global_pos = self._store.get_last("GLOBAL_POSITION_INT").get("data", {})
+
+        sats = gps.get("satellites_visible")
+        hdop = gps.get("eph", 0) / 100.0 if gps.get("eph") else None
+        vbat = sys_status.get("voltage_battery", 0) / 1000.0
+        vcell = vbat / self.BATT_CELLS
+        used_mah = battery.get("current_consumed")
+        roll = round(math.degrees(att.get("roll", 0)), 2)
+        pitch = round(math.degrees(att.get("pitch", 0)), 2)
+        yaw = round(math.degrees(att.get("yaw", 0)))
+        airspeed = vfr.get("airspeed")
+
+        # distance to home (if both positions exist)
+        # TODO make dist
+        dist_home = None
+        if global_pos and home:
+            dx = (global_pos["lat"] - home["latitude"]) * 1e-7
+            dy = (global_pos["lon"] - home["longitude"]) * 1e-7
+            dist_home = math.sqrt(dx*dx + dy*dy) * 111000  # crude meters
+        
+        return {
+            "gps_sats": sats,
+            "hdop": hdop,
+            "vbat": vbat,
+            "vcell": vcell,
+            "used_mah": used_mah,
+            "roll": roll,
+            "pitch": pitch,
+            "yaw": yaw,
+            "airspeed": airspeed,
+            "dist_home": dist_home,
+        }
+    
     
 
     @requires_connection
