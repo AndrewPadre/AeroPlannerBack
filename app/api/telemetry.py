@@ -34,4 +34,8 @@ def get_message_history(msg_id: str, mav: MavlinkConnection = Depends(get_mav)):
     res = mav.get_message_history(msg_id)
     return res
 
+@router.get("/frontend-telemetry")
+@check_error
+def get_frontend_telemetry(mav: MavlinkConnection = Depends(get_mav)):
+    return mav.get_frontend_telemetry()
 

@@ -8,6 +8,7 @@ import random
 from typing import Any
 from queue import Queue
 
+
 import pygame
 from pymavlink import mavutil
 
@@ -61,6 +62,7 @@ class MavlinkConnection:
     TIMEOUT = 3  # Standart timeout for mavlink functions
     LOST_SEC = 5  # Delay from last heartbeat to switch state to RECONNECTING
     CONNECT_TIMEOUT = 30  # How long it will take to 
+    BATT_CELLS = 3
 
     def __init__(self, port, baudrate=None):
         self.port = port
@@ -202,7 +204,7 @@ class MavlinkConnection:
             self.master.target_component,            
             *rc_channel_values)
         
-            
+        
                     
     def _try_connect_once(self, timeout: float) -> bool:
         """
@@ -290,6 +292,46 @@ class MavlinkConnection:
     def get_message_history(self, msg_id) -> list:
         return self._store.get_history(msg_id, 50)  # TODO remove hardcode
     
+    @requires_connection
+    def get_frontend_telemetry(self) -> dict:
+        gps = self._store.get_last("GPS_RAW_INT").get("data", {})
+        sys_status = self._store.get_last("SYS_STATUS").get("data", {})
+        battery = self._store.get_last("BATTERY_STATUS").get("data", {})
+        att = self._store.get_last("ATTITUDE").get("data", {})
+        vfr = self._store.get_last("VFR_HUD").get("data", {})
+        home = self._store.get_last("HOME_POSITION").get("data", {})
+        global_pos = self._store.get_last("GLOBAL_POSITION_INT").get("data", {})
+
+        sats = gps.get("satellites_visible")
+        hdop = gps.get("eph", 0) / 100.0 if gps.get("eph") else None
+        vbat = sys_status.get("voltage_battery", 0) / 1000.0
+        vcell = vbat / self.BATT_CELLS
+        used_mah = battery.get("current_consumed")
+        roll = round(math.degrees(att.get("roll", 0)), 2)
+        pitch = round(math.degrees(att.get("pitch", 0)), 2)
+        yaw = round(math.degrees(att.get("yaw", 0)))
+        airspeed = vfr.get("airspeed")
+
+        # distance to home (if both positions exist)
+        # TODO make dist
+        dist_home = None
+        if global_pos and home:
+            dx = (global_pos["lat"] - home["latitude"]) * 1e-7
+            dy = (global_pos["lon"] - home["longitude"]) * 1e-7
+            dist_home = math.sqrt(dx*dx + dy*dy) * 111000  # crude meters
+        
+        return {
+            "gps_sats": sats,
+            "hdop": hdop,
+            "vbat": vbat,
+            "vcell": vcell,
+            "used_mah": used_mah,
+            "roll": roll,
+            "pitch": pitch,
+            "yaw": yaw,
+            "airspeed": airspeed,
+            "dist_home": dist_home,
+        }
     
     
 
