@@ -9,8 +9,8 @@ from typing import Any
 from queue import Queue
 
 
-import pygame
 from pymavlink import mavutil
+from geopy.distance import geodesic
 
 from core.services.telemetry_cache import TelemetryCache
 from core.services.mission_utils import dict_to_mission_item_int_fields, mission_item_msg_to_dict, save_mission_json, load_mission_json
@@ -90,10 +90,17 @@ class MavlinkConnection:
         
         self.remote_controller = RemoteController()
         self._remote_run_event = threading.Event()  # event for starting loop that takes rc_values from remote
-        self._remote_send_event = threading.Event()  # event for starging loop that sends rc_values to MAV
+        self._remote_send_event = threading.Event()  # event that trigger sending rc_values to MAV
         self._remote_thread: threading.Thread = threading.Thread(target=self._remote_loop, daemon=True)
         self.remote_rc_values: dict = self.remote_controller.do_default_rc_mapping_dict()
         self._remote_state = RemoteConnState.DISCONNECTED
+        
+        self.is_in_air: bool = False
+        self._airborne_since: float | None = None   # monotonic timestamp when went airborne
+        self._time_in_air: float = 0.0  
+        self._prev_latlon: tuple[float, float] | None = None
+        self._prev_save_travel_time: float | None = None
+        self._travel_dist_m: float = 0.0
 
         
 
@@ -247,16 +254,67 @@ class MavlinkConnection:
             with self._state_lock:
                 self._state = ConnState.DISCONNECTED
             return False
-
         
+    def get_time_in_air_seconds(self) -> float:
+        total = self._time_in_air
+        if self._airborne_since is not None:
+            total += (time.monotonic() - self._airborne_since)
+        return total
+
+
+    def _check_if_in_air(self, groundspeed, airspeed):
+        prev_in_air = self.is_in_air
+        if groundspeed:
+            if groundspeed > 15:
+                self.is_in_air = True
+            elif groundspeed < 10:
+                self.is_in_air = False
+        else:
+            if airspeed > 15:
+                self.is_in_air = True 
+            elif airspeed < 10:
+                self.is_in_air = False 
+        if self.is_in_air and not self._time_in_air:
+            self._time_in_air = time.time()
+        
+        now = time.monotonic()
+
+        # Rising edge: just went airborne -> start timer
+        if self.is_in_air and not prev_in_air:
+            self._airborne_since = now
+
+        # Falling edge: landed -> accumulate and stop timer
+        if (not self.is_in_air) and prev_in_air:
+            if self._airborne_since is not None:
+                self._time_in_air += (now - self._airborne_since)
+                self._airborne_since = None
+
     
+    # Loop
     def _start_reader_and_watchdog(self):
         def reader():
             while not self._stop.is_set():
                 try:
                     self.telemetry_store()  # Update telemetry store, read data from the UAV
-                except Exception:
+                    # TODO move to method
+                    groundspeed = self._store.get_last("VFR_HUD").get("data", {}).get("groundspeed", 0)
+                    airspeed = self._store.get_last("VFR_HUD").get("data", {}).get("airspeed", 0)
+                    spd = None
+                    if self.is_gps_fix():
+                        spd = groundspeed
+                    else:
+                        spd = airspeed
+                        
+                    self._check_if_in_air(groundspeed, airspeed)
+                    lat = self._store.get_last("GLOBAL_POSITION_INT").get("data", {}).get("lat", 0)
+                    lon = self._store.get_last("GLOBAL_POSITION_INT").get("data", {}).get("lon", 0)
+                    self._accum_travel_by_pos(lat, lon, spd)
+                    
+                        
+                except Exception as e:
                     time.sleep(0.2)
+                    print("Exception occured", e)
+
         def watchdog():
             while not self._stop.is_set():
                 if self.is_connected() and (time.time() - self._last_hb_ts > self.LOST_SEC):
@@ -270,6 +328,7 @@ class MavlinkConnection:
                         self._state = ConnState.CONNECTED
                     self._connected_evt.set()
                 time.sleep(0.5)
+        # TODO consider deleting one thread
         self._reader_thread = threading.Thread(target=reader, daemon=True)
         self._reader_thread.start()
         threading.Thread(target=watchdog, daemon=True).start()
@@ -305,20 +364,32 @@ class MavlinkConnection:
         sats = gps.get("satellites_visible")
         hdop = gps.get("eph", 0) / 100.0 if gps.get("eph") else None
         vbat = sys_status.get("voltage_battery", 0) / 1000.0
-        vcell = vbat / self.BATT_CELLS
+        vcell = vbat / self.BATT_CELLS  # TODO consider replacement
+        current = sys_status.get("current_battery")
         used_mah = battery.get("current_consumed")
         roll = round(math.degrees(att.get("roll", 0)), 2)
         pitch = round(math.degrees(att.get("pitch", 0)), 2)
         yaw = round(math.degrees(att.get("yaw", 0)))
         airspeed = vfr.get("airspeed")
+        groundspeed = vfr.get("groundspeed")
+
 
         # distance to home (if both positions exist)
-        # TODO make dist
-        dist_home = None
+        dist_home = 0
+        time_to_home = 0
+        print("global_pos", global_pos)
+        print("home", home)
         if global_pos and home:
-            dx = (global_pos["lat"] - home["latitude"]) * 1e-7
-            dy = (global_pos["lon"] - home["longitude"]) * 1e-7
-            dist_home = math.sqrt(dx*dx + dy*dy) * 111000  # crude meters
+            lat_now = global_pos["lat"] * 1e-7
+            lon_now = global_pos["lon"] * 1e-7
+            lat_home = home["latitude"] * 1e-7
+            lon_home = home["longitude"] * 1e-7
+
+            dist_home = geodesic((lat_now, lon_now), (lat_home, lon_home)).meters
+
+            speed = groundspeed or airspeed
+            if speed and speed > 0:
+                time_to_home = dist_home / speed  
         
         return {
             "gps_sats": sats,
@@ -326,12 +397,49 @@ class MavlinkConnection:
             "vbat": vbat,
             "vcell": vcell,
             "used_mah": used_mah,
+            "current": current,
             "roll": roll,
             "pitch": pitch,
             "yaw": yaw,
             "airspeed": airspeed,
+            "groundspeed": groundspeed,
             "dist_home": dist_home,
+            "time_in_air": self.get_time_in_air_seconds(), 
+            "time_to_home": time_to_home,
+            "mode": self.curr_mode,
+            "travel_dist": self._travel_dist_m
         }
+        
+    
+
+    def _accum_travel_by_pos(self, lat, lon, spd):
+        """Accumulate travel distance using positions (GLOBAL_POSITION_INT)."""
+        if lat is None or lon is None:
+            return
+        lat = float(lat) * 1e-7
+        lon = float(lon) * 1e-7
+        print("dist ", self._travel_dist_m)
+        if self.is_gps_fix():
+            if self._prev_latlon is not None:
+                d = geodesic(self._prev_latlon, (lat, lon)).meters
+                print("d", d)
+                # Ignore GPS jitter under 0.5 m and add only when in air
+                if self.is_in_air:
+                    self._travel_dist_m += d
+            self._prev_latlon = (lat, lon)
+            self._prev_save_travel_time = None
+        else:
+            if self._prev_save_travel_time is not None:
+                estimate = time.time() - self._prev_save_travel_time
+                d = estimate * spd
+                self._travel_dist_m += d
+            self._prev_save_travel_time = time.time()
+            self._prev_latlon = None
+
+    
+    def is_gps_fix(self) -> bool:
+        return self._store.get_last("GPS_RAW_INT").get("data", {}).get("fix_type", 0) >= 2
+
     
     
 
@@ -704,7 +812,7 @@ class MavlinkConnection:
                 self._last_hb_ts = time.time()
                 self.curr_mode = mavutil.mode_string_v10(msg)
                 self.is_armed = (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) != 0
-            elif t == "COMMAND_ACK":
+            elif t == "COMMAND_ACK":  # Write las command_ack message, for commands that requires command_ack
                 self._last_command_ack = msg
             elif t.startswith("UNKNOWN"):
                 continue
