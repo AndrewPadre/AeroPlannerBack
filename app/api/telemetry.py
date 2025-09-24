@@ -3,7 +3,7 @@ from functools import wraps
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from app.deps import get_mav, check_error
+from app.deps import get_mav, check_error, camelize_response
 from app.schemas.telemetry import Telemetry
 from core.services.mavlink_connection import MavlinkConnection
 
@@ -36,6 +36,7 @@ def get_message_history(msg_id: str, mav: MavlinkConnection = Depends(get_mav)):
 
 @router.get("/frontend-telemetry")
 @check_error
+@camelize_response
 def get_frontend_telemetry(mav: MavlinkConnection = Depends(get_mav)):
     return mav.get_frontend_telemetry()
 
