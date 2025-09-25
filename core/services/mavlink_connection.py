@@ -257,7 +257,7 @@ class MavlinkConnection:
         
     def get_time_in_air_minutes(self) -> float:
         if self._airborne_since and self.is_in_air:
-            return time.time() - self._airborne_since / 60
+            return (time.time() - self._airborne_since) / 60
         return 0.0
 
 
