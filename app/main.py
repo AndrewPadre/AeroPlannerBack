@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.settings import settings
-from app.api import connection, telemetry, joystick, gimbal_view_pro, commands
+from app.api import connection, telemetry, joystick, gimbal_view_pro, commands, hud_stream
 
 origins = [
     "http://localhost:1420",  
@@ -23,3 +23,4 @@ app.include_router(telemetry.router,  prefix=f"{settings.API_PREFIX}", tags=["te
 app.include_router(commands.router, prefix=f"{settings.API_PREFIX}", tags=["commands"])
 app.include_router(joystick.router,  prefix=f"{settings.API_PREFIX}/joystick", tags=["joystick"])
 app.include_router(gimbal_view_pro.router,  prefix=f"{settings.API_PREFIX}", tags=["GimbalViewPro"])
+app.include_router(hud_stream.router,  prefix=f"{settings.API_PREFIX}", tags=["HudStream"])

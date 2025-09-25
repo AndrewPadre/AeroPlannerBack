@@ -257,7 +257,7 @@ class MavlinkConnection:
         
     def get_time_in_air_minutes(self) -> float:
         if self._airborne_since and self.is_in_air:
-            return (time.time() - self._airborne_since) / 60
+            return round((time.time() - self._airborne_since) / 60, 2)
         return 0.0
 
 
@@ -359,15 +359,16 @@ class MavlinkConnection:
 
         sats = gps.get("satellites_visible")
         hdop = gps.get("eph", 0) / 100.0 if gps.get("eph") else None
-        vbat = sys_status.get("voltage_battery", 0) / 1000.0
-        vcell = vbat / self.BATT_CELLS  # TODO consider replacement
-        current = sys_status.get("current_battery")
+        vbat = round(sys_status.get("voltage_battery", 0) / 1000.0, 2)
+        vcell = round(vbat / self.BATT_CELLS, 2)  # TODO consider replacement
+        current = sys_status.get("current_battery") / 100
         used_mah = battery.get("current_consumed")
         roll = round(math.degrees(att.get("roll", 0)), 2)
         pitch = round(math.degrees(att.get("pitch", 0)), 2)
         yaw = round(math.degrees(att.get("yaw", 0)))
-        airspeed = vfr.get("airspeed")
-        groundspeed = vfr.get("groundspeed")
+        airspeed = round(vfr.get("airspeed", 0), 1)
+        groundspeed = round(vfr.get("groundspeed", 0), 1)
+        alt = round(vfr.get("alt"), 1)
 
 
         # distance to home (if both positions exist)
@@ -399,11 +400,21 @@ class MavlinkConnection:
             "yaw": yaw,
             "airspeed": airspeed,
             "groundspeed": groundspeed,
+            "alt": alt,
             "dist_to_home": dist_home,
             "time_in_air": self.get_time_in_air_minutes(), 
             "time_to_home": time_to_home,
             "mode": self.curr_mode,
-            "travel_dist": self._travel_dist_m
+            "travel_dist": self._travel_dist_m,
+        }
+    
+    def get_hud_telemetry(self) -> dict:
+        att = self._store.get_last("ATTITUDE").get("data", {})
+        roll = round(math.degrees(att.get("roll", 0)), 2)
+        pitch = round(math.degrees(att.get("pitch", 0)), 2)
+        return {
+            "roll": roll,
+            "pitch": pitch
         }
         
     
