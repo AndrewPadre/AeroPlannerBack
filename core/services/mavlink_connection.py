@@ -255,11 +255,10 @@ class MavlinkConnection:
                 self._state = ConnState.DISCONNECTED
             return False
         
-    def get_time_in_air_seconds(self) -> float:
-        total = self._time_in_air
-        if self._airborne_since is not None:
-            total += (time.monotonic() - self._airborne_since)
-        return total
+    def get_time_in_air_minutes(self) -> float:
+        if self._airborne_since and self.is_in_air:
+            return time.time() - self._airborne_since / 60
+        return 0.0
 
 
     def _check_if_in_air(self, groundspeed, airspeed):
@@ -274,10 +273,8 @@ class MavlinkConnection:
                 self.is_in_air = True 
             elif airspeed < 10:
                 self.is_in_air = False 
-        if self.is_in_air and not self._time_in_air:
-            self._time_in_air = time.time()
         
-        now = time.monotonic()
+        now = time.time()
 
         # Rising edge: just went airborne -> start timer
         if self.is_in_air and not prev_in_air:
@@ -286,7 +283,6 @@ class MavlinkConnection:
         # Falling edge: landed -> accumulate and stop timer
         if (not self.is_in_air) and prev_in_air:
             if self._airborne_since is not None:
-                self._time_in_air += (now - self._airborne_since)
                 self._airborne_since = None
 
     
@@ -404,7 +400,7 @@ class MavlinkConnection:
             "airspeed": airspeed,
             "groundspeed": groundspeed,
             "dist_to_home": dist_home,
-            "time_in_air": self.get_time_in_air_seconds(), 
+            "time_in_air": self.get_time_in_air_minutes(), 
             "time_to_home": time_to_home,
             "mode": self.curr_mode,
             "travel_dist": self._travel_dist_m
