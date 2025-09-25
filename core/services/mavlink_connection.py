@@ -403,7 +403,7 @@ class MavlinkConnection:
             "yaw": yaw,
             "airspeed": airspeed,
             "groundspeed": groundspeed,
-            "dist_home": dist_home,
+            "dist_to_home": dist_home,
             "time_in_air": self.get_time_in_air_seconds(), 
             "time_to_home": time_to_home,
             "mode": self.curr_mode,
