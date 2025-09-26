@@ -368,7 +368,7 @@ class MavlinkConnection:
         yaw = round(math.degrees(att.get("yaw", 0)))
         airspeed = round(vfr.get("airspeed", 0), 1)
         groundspeed = round(vfr.get("groundspeed", 0), 1)
-        alt = round(vfr.get("alt"), 1)
+        alt = round(global_pos.get("relative_alt"), 1)
 
 
         # distance to home (if both positions exist)
