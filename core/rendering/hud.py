@@ -192,8 +192,8 @@ class CenterReticle(BaseWidget):
 class CenterWings(BaseWidget):
     """Horizontal 'goalpost' wings with small brackets and fangs."""
     def __init__(self, layout: LayoutBox, style: Style,
-                 left_margin=40, right_margin=40,
-                 center_spacing=50, arm=160, inner=70,
+                 left_margin=80, right_margin=80,
+                 center_spacing=50, arm=200, inner=70,
                  vertical_gap=10, vertical_line=20, lift=0,
                  thickness_outer=2, thickness_inner=2, thickness_fang=2):
         super().__init__(layout, style)
@@ -294,7 +294,7 @@ class PitchLadder(BaseWidget):
         REF_W, REF_H = 600, 600
 
         # Scale factors clamped to reasonable bounds
-        scale_len   = max(0.4, min(1.6, frame_w / REF_W))  # affects line length (width-driven)
+        scale_len   = max(0.4, min(1.6, frame_w / REF_W)) * 0.9 # affects line length (width-driven)
         scale_thick = max(0.5, min(1, frame_h / REF_H))  # affects thickness (height-driven)
         scale_ppd   = max(0.5, min(0.7, frame_h / REF_H))  # affects pixels_per_deg (height-driven)
         label_scale = max(0.3, min(0.55, frame_h / REF_H) )
@@ -336,9 +336,9 @@ class PitchLadder(BaseWidget):
             else:
                 r.line((cx - half, y), (cx + half, y), s.line, thick)
 
-            if is_major and deg != 0:
-                r.text(f"{deg:+}", (cx + half + self.label_dx, y + self.label_dy),
-                       scale=label_scale, color=s.line, thickness=s.font_thickness_label)
+            # if is_major and deg != 0:
+                # r.text(f"{deg:+}", (cx + half + self.label_dx, y + self.label_dy),
+                #        scale=label_scale, color=s.line, thickness=s.font_thickness_label)
 
 
 
@@ -376,10 +376,9 @@ class RollArc(BaseWidget):
         self.old_roll = roll_deg
 
 
-
         # Geometry: choose radius that fits the frame
-        radius = min(int(frame_w / 3.5), self.radius_max)
-        radius = min(radius, int(frame_h / 3.5))
+        radius = min(int(frame_w / 3.7), self.radius_max)
+        radius = min(radius, int(frame_h / 3.7))
         radius = max(radius, self.radius_min)
         if radius < 120:
             self.thickness = 1
@@ -398,8 +397,8 @@ class RollArc(BaseWidget):
         for d in range(-self.span, self.span + 1, self.tick_step):
             ang = math.radians(self.base_deg + d)
             is_major = (d % self.major_step == 0)
-            r_outer = radius
-            r_inner = radius - (self.tick_len_major if is_major else self.tick_len_minor)
+            r_outer = radius + 2
+            r_inner = radius - (self.tick_len_major if is_major else self.tick_len_minor) + 2
 
             x2 = int(cx + r_outer * math.cos(ang))
             y2 = int(cy + r_outer * math.sin(ang))
@@ -832,7 +831,7 @@ class Hud:
 # =========================
 HUD_LAYOUT = {
     # Main primitives
-    "roll_arc": {"anchor": ("top", "center"), "offset": (0, "15%")},
+    "roll_arc": {"anchor": ("top", "center"), "offset": (0, "17%")},
     "pitch_ledder":    {"anchor": ("center", "center"), "offset": (0, 0)},
     "wings":    {"anchor": ("center", "center"), "offset": (0, 0)},
     "reticle":  {"anchor": ("center", "center"), "offset": (0, 0)},
