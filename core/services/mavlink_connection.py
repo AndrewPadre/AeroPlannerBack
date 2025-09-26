@@ -359,7 +359,7 @@ class MavlinkConnection:
 
         sats = gps.get("satellites_visible")
         hdop = gps.get("eph", 0) / 100.0 if gps.get("eph") else None
-        vbat = round(sys_status.get("voltage_battery", 0) / 1000.0, 2)
+        vbat = round(sys_status.get("voltage_battery", 0) / 1000.0, 2) 
         vcell = round(vbat / self.BATT_CELLS, 2)  # TODO consider replacement
         current = sys_status.get("current_battery") / 100
         used_mah = battery.get("current_consumed")
@@ -368,7 +368,7 @@ class MavlinkConnection:
         yaw = round(math.degrees(att.get("yaw", 0)))
         airspeed = round(vfr.get("airspeed", 0), 1)
         groundspeed = round(vfr.get("groundspeed", 0), 1)
-        alt = round(global_pos.get("relative_alt"), 1)
+        alt = round(global_pos.get("relative_alt") / 1000, 1)
 
 
         # distance to home (if both positions exist)
@@ -405,7 +405,7 @@ class MavlinkConnection:
             "time_in_air": self.get_time_in_air_minutes(), 
             "time_to_home": time_to_home,
             "mode": self.curr_mode,
-            "travel_dist": self._travel_dist_m,
+            "travel_dist": round(self._travel_dist_m, 1),
         }
     
     def get_hud_telemetry(self) -> dict:
