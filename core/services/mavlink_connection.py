@@ -356,6 +356,7 @@ class MavlinkConnection:
         vfr = self._store.get_last("VFR_HUD").get("data", {})
         home = self._store.get_last("HOME_POSITION").get("data", {})
         global_pos = self._store.get_last("GLOBAL_POSITION_INT").get("data", {})
+        nav_out = self._store.get_last("NAV_CONTROLLER_OUTPUT").get("data", {})
 
         sats = gps.get("satellites_visible")
         hdop = gps.get("eph", 0) / 100.0 if gps.get("eph") else None
@@ -370,19 +371,26 @@ class MavlinkConnection:
         groundspeed = round(vfr.get("groundspeed", 0), 1)
         alt = round(global_pos.get("relative_alt") / 1000, 1)
 
+        
+        lat = global_pos.get("lat") * 1e-7
+        lon = global_pos.get("lon") * 1e-7
+        raw_lat = gps.get("lat") * 1e-7
+        raw_lon = gps.get("lon") * 1e-7
+        gps_yaw = global_pos.get("hdg", 0) // 100
+        yaw_to_wp = nav_out.get("target_bearing")
+
 
         # distance to home (if both positions exist)
         dist_home = 0
         time_to_home = 0
+
         print("global_pos", global_pos)
         print("home", home)
         if global_pos and home:
-            lat_now = global_pos["lat"] * 1e-7
-            lon_now = global_pos["lon"] * 1e-7
             lat_home = home["latitude"] * 1e-7
             lon_home = home["longitude"] * 1e-7
 
-            dist_home = geodesic((lat_now, lon_now), (lat_home, lon_home)).meters
+            dist_home = geodesic((lat, lon), (lat_home, lon_home)).meters
 
             speed = groundspeed or airspeed
             if speed and speed > 0:
@@ -406,6 +414,10 @@ class MavlinkConnection:
             "time_to_home": time_to_home,
             "mode": self.curr_mode,
             "travel_dist": round(self._travel_dist_m, 1),
+            "raw_lat": raw_lat,
+            "raw_lon": raw_lon,
+            "gps_yaw": gps_yaw,
+            "yaw_to_wp": yaw_to_wp,
         }
     
     def get_hud_telemetry(self) -> dict:
@@ -698,7 +710,7 @@ class MavlinkConnection:
 
 
     @requires_connection
-    def change_airspeed(self, airspeed: float) -> bool:
+    def change_airspeed(self, airspeed: int) -> bool:
         with self._command_ack_lock:
             self.master.mav.command_long_send(
                 self.master.target_system,

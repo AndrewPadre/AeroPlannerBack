@@ -32,3 +32,7 @@ def change_mode(mode: str, mav: MavlinkConnection=Depends(get_mav)) -> dict:
 def change_altitude(altitude: int, mav: MavlinkConnection = Depends(get_mav)):
     return mav.change_altitude(altitude)
 
+@router.post("/change-speed/{speed}")
+@check_error
+def change_speed(speed: int, mav: MavlinkConnection = Depends(get_mav)):
+    return mav.change_airspeed(speed)
