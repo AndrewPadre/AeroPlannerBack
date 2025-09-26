@@ -193,7 +193,7 @@ class CenterWings(BaseWidget):
     """Horizontal 'goalpost' wings with small brackets and fangs."""
     def __init__(self, layout: LayoutBox, style: Style,
                  left_margin=80, right_margin=80,
-                 center_spacing=50, arm=200, inner=70,
+                 center_spacing=50, arm=60, inner=70,
                  vertical_gap=10, vertical_line=20, lift=0,
                  thickness_outer=2, thickness_inner=2, thickness_fang=2):
         super().__init__(layout, style)
@@ -231,8 +231,10 @@ class CenterWings(BaseWidget):
         right_end = frame_w - self.right_margin
 
         # Outer long wings
-        r.line((left_end, cy), (cx - self.arm, cy), color, self.thickness_outer)
-        r.line((cx + self.arm, cy), (right_end, cy), color, self.thickness_outer)
+        left_long_wing_x = cx - self.inner - self.center_spacing
+        right_long_wing_x = cx + self.inner + self.center_spacing
+        r.line((left_end, cy), (left_long_wing_x - self.arm, cy), color, self.thickness_outer)
+        r.line((right_long_wing_x + self.arm, cy), (right_end, cy), color, self.thickness_outer)
 
         # Inner short segments (lower)
         r.line((cx - self.inner - self.center_spacing, cy + self.vertical_gap),
@@ -892,7 +894,6 @@ if __name__ == "__main__":
         now = time.time()
         if now - fps_timer >= 1.0:
             fps = frames / (now - fps_timer)
-            print(f"[INFO] FPS: {fps:.1f}")
             fps_timer = now
             frames = 0
 
