@@ -397,8 +397,8 @@ class RollArc(BaseWidget):
         for d in range(-self.span, self.span + 1, self.tick_step):
             ang = math.radians(self.base_deg + d)
             is_major = (d % self.major_step == 0)
-            r_outer = radius + 2
-            r_inner = radius - (self.tick_len_major if is_major else self.tick_len_minor) + 2
+            r_outer = radius - 2
+            r_inner = radius - (self.tick_len_major if is_major else self.tick_len_minor) - 2
 
             x2 = int(cx + r_outer * math.cos(ang))
             y2 = int(cy + r_outer * math.sin(ang))
